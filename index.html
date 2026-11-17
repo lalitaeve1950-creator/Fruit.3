@@ -1,0 +1,563 @@
+
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>Fruit AI - ระบบตรวจจับผลไม้</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+
+<style>
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: Arial, sans-serif;
+    background: #f0f7ed;
+    margin: 0;
+    padding: 25px 15px;
+    text-align: center;
+    color: #284b30;
+}
+
+.container {
+    max-width: 650px;
+    margin: auto;
+    background: white;
+    padding: 25px;
+    border-radius: 20px;
+    box-shadow: 0 5px 20px #00000012;
+}
+
+h1 {
+    color: #34834a;
+    font-size: 32px;
+}
+
+button, .upload {
+    padding: 12px 20px;
+    border: none;
+    border-radius: 10px;
+    margin: 6px;
+    cursor: pointer;
+    font-size: 15px;
+    font-weight: bold;
+}
+
+.start {
+    background: #39834a;
+    color: white;
+}
+
+.stop {
+    background: #e76b5b;
+    color: white;
+}
+
+.upload {
+    display: inline-block;
+    background: #e6f3df;
+    color: #32683c;
+}
+
+button:disabled {
+    opacity: .5;
+    cursor: not-allowed;
+}
+
+#webcam-container {
+    margin: 20px auto;
+}
+
+canvas, #preview {
+    max-width: 100%;
+    border-radius: 15px;
+}
+
+#preview {
+    width: 320px;
+    margin: 15px auto;
+}
+
+.result-box {
+    background: #f0f8ec;
+    padding: 20px;
+    border-radius: 15px;
+    margin-top: 20px;
+}
+
+#best-result {
+    font-size: 27px;
+    font-weight: bold;
+    color: #34834a;
+    margin: 10px;
+}
+
+.prediction {
+    text-align: left;
+    margin: 18px 0;
+}
+
+.bar {
+    height: 14px;
+    background: #e2e8df;
+    border-radius: 20px;
+    overflow: hidden;
+    margin-top: 7px;
+}
+
+.fill {
+    height: 100%;
+    width: 0%;
+    background: #48a65b;
+    transition: width .3s;
+}
+
+#status {
+    color: #777;
+    margin-top: 15px;
+    overflow-wrap: anywhere;
+}
+
+.error {
+    color: #d33;
+    background: #fff0f0;
+    padding: 10px;
+    border-radius: 8px;
+    font-size: 13px;
+    display: none;
+    overflow-wrap: anywhere;
+}
+
+input {
+    display: none;
+}
+
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>🍎 Fruit AI</h1>
+
+<p>ระบบตรวจจับและจำแนกชนิดผลไม้ด้วย AI</p>
+
+<button class="start" id="startBtn" onclick="startCamera()">
+📷 เปิดกล้อง
+</button>
+
+<button class="stop" id="stopBtn" onclick="stopCamera()" disabled>
+ปิดกล้อง
+</button>
+
+<label class="upload" for="imageInput">
+🖼️ เลือกรูปผลไม้
+</label>
+
+<input type="file" id="imageInput" accept="image/*">
+
+<div id="webcam-container"></div>
+
+<img id="preview" hidden alt="ภาพผลไม้">
+
+<p id="status">กำลังรอการใช้งาน</p>
+
+<div id="errorBox" class="error"></div>
+
+<div class="result-box">
+
+<p>ผลการตรวจจับ</p>
+
+<div id="best-result">รอการตรวจจับ...</div>
+
+<div id="best-percent"></div>
+
+</div>
+
+<h3>ผลการวิเคราะห์ทั้งหมด</h3>
+
+<div id="label-container"></div>
+
+</div>
+
+<script>
+
+// =================================
+// ตั้งค่าโมเดล AI
+// =================================
+
+const MODEL_URL =
+"https://teachablemachine.withgoogle.com/models/CJtGL516f/";
+
+let model = null;
+let webcam = null;
+let running = false;
+let animationId = null;
+let busy = false;
+
+// =================================
+// แสดง Error
+// =================================
+
+function showError(error) {
+
+    console.error("Fruit AI Error:", error);
+
+    const box = document.getElementById("errorBox");
+
+    box.style.display = "block";
+
+    box.textContent =
+        "รายละเอียดข้อผิดพลาด: " +
+        (error.message || String(error));
+}
+
+// =================================
+// โหลดโมเดล
+// =================================
+
+async function loadModel() {
+
+    if (model) return;
+
+    document.getElementById("status").innerText =
+        "กำลังโหลดโมเดล AI...";
+
+    await tf.ready();
+
+    model = await tmImage.load(
+        MODEL_URL + "model.json",
+        MODEL_URL + "metadata.json"
+    );
+
+    console.log("Model loaded successfully");
+
+    console.log(
+        "จำนวน Class:",
+        model.getTotalClasses()
+    );
+
+    document.getElementById("status").innerText =
+        "โหลดโมเดลสำเร็จ";
+}
+
+// =================================
+// แสดงผลการทำนาย
+// =================================
+
+function displayResult(predictions) {
+
+    const sorted = [...predictions].sort(
+        (a, b) => b.probability - a.probability
+    );
+
+    const best = sorted[0];
+
+    document.getElementById("best-result").innerText =
+        best.className;
+
+    document.getElementById("best-percent").innerText =
+        "ความมั่นใจ " +
+        (best.probability * 100).toFixed(2) + "%";
+
+    const container =
+        document.getElementById("label-container");
+
+    container.innerHTML = "";
+
+    sorted.forEach(item => {
+
+        const percent = item.probability * 100;
+
+        const div = document.createElement("div");
+
+        div.className = "prediction";
+
+        const title = document.createElement("strong");
+
+        title.textContent =
+            item.className + " : " +
+            percent.toFixed(2) + "%";
+
+        const bar = document.createElement("div");
+
+        bar.className = "bar";
+
+        const fill = document.createElement("div");
+
+        fill.className = "fill";
+
+        fill.style.width = percent + "%";
+
+        bar.appendChild(fill);
+
+        div.appendChild(title);
+
+        div.appendChild(bar);
+
+        container.appendChild(div);
+
+    });
+
+}
+
+// =================================
+// วิเคราะห์ภาพ
+// =================================
+
+async function predictImage(image) {
+
+    if (!model) {
+        throw new Error("ยังไม่ได้โหลดโมเดล AI");
+    }
+
+    if (!image) {
+        throw new Error("ไม่พบภาพที่ต้องการวิเคราะห์");
+    }
+
+    if (!image.complete || image.naturalWidth === 0) {
+        throw new Error("ภาพยังโหลดไม่เสร็จหรือไฟล์ภาพไม่ถูกต้อง");
+    }
+
+    document.getElementById("status").innerText =
+        "AI กำลังวิเคราะห์ภาพ...";
+
+    // ส่งภาพเข้าโมเดล
+    const predictions = await model.predict(image);
+
+    if (!predictions || predictions.length === 0) {
+        throw new Error("โมเดลไม่ได้ส่งผลการทำนายกลับมา");
+    }
+
+    displayResult(predictions);
+
+    document.getElementById("status").innerText =
+        "ตรวจจับผลไม้สำเร็จ";
+
+}
+
+// =================================
+// เปิดกล้อง
+// =================================
+
+async function startCamera() {
+
+    try {
+
+        stopCamera();
+
+        document.getElementById("errorBox").style.display =
+            "none";
+
+        document.getElementById("startBtn").disabled =
+            true;
+
+        await loadModel();
+
+        webcam = new tmImage.Webcam(320, 320, true);
+
+        await webcam.setup();
+
+        await webcam.play();
+
+        document.getElementById("webcam-container").innerHTML =
+            "";
+
+        document.getElementById("webcam-container")
+            .appendChild(webcam.canvas);
+
+        document.getElementById("preview").hidden = true;
+
+        running = true;
+
+        document.getElementById("stopBtn").disabled =
+            false;
+
+        document.getElementById("status").innerText =
+            "กำลังตรวจจับผลไม้จากกล้อง";
+
+        cameraLoop();
+
+    } catch (error) {
+
+        showError(error);
+
+        document.getElementById("status").innerText =
+            "เปิดกล้องหรือโหลดโมเดลไม่สำเร็จ";
+
+        document.getElementById("startBtn").disabled =
+            false;
+
+        document.getElementById("stopBtn").disabled =
+            true;
+
+    }
+
+}
+
+// =================================
+// วนลูปกล้อง
+// =================================
+
+async function cameraLoop() {
+
+    if (!running || busy) return;
+
+    busy = true;
+
+    try {
+
+        webcam.update();
+
+        const predictions =
+            await model.predict(webcam.canvas);
+
+        displayResult(predictions);
+
+    } catch (error) {
+
+        running = false;
+
+        showError(error);
+
+        document.getElementById("status").innerText =
+            "เกิดข้อผิดพลาดในการตรวจจับ";
+
+    } finally {
+
+        busy = false;
+
+    }
+
+    if (running) {
+
+        animationId =
+            requestAnimationFrame(cameraLoop);
+
+    }
+
+}
+
+// =================================
+// ปิดกล้อง
+// =================================
+
+function stopCamera() {
+
+    running = false;
+
+    if (animationId !== null) {
+
+        cancelAnimationFrame(animationId);
+
+        animationId = null;
+
+    }
+
+    if (webcam) {
+
+        webcam.stop();
+
+        webcam = null;
+
+    }
+
+    busy = false;
+
+    document.getElementById("webcam-container")
+        .innerHTML = "";
+
+    document.getElementById("stopBtn").disabled =
+        true;
+
+    document.getElementById("startBtn").disabled =
+        false;
+
+}
+
+// =================================
+// อัปโหลดภาพผลไม้
+// =================================
+
+document.getElementById("imageInput")
+.addEventListener("change", async function(event) {
+
+    const file = event.target.files[0];
+
+    if (!file) return;
+
+    try {
+
+        stopCamera();
+
+        document.getElementById("errorBox").style.display =
+            "none";
+
+        document.getElementById("status").innerText =
+            "กำลังเตรียมภาพ...";
+
+        if (!file.type.startsWith("image/")) {
+
+            throw new Error("กรุณาเลือกไฟล์รูปภาพ");
+
+        }
+
+        await loadModel();
+
+        const img = document.getElementById("preview");
+
+        const imageURL = URL.createObjectURL(file);
+
+        try {
+
+            // รอให้ภาพโหลดเสร็จก่อน
+            img.src = imageURL;
+
+            await img.decode();
+
+            if (!img.naturalWidth || !img.naturalHeight) {
+
+                throw new Error("ไม่สามารถอ่านไฟล์ภาพได้");
+
+            }
+
+            img.hidden = false;
+
+            document.getElementById("webcam-container")
+                .innerHTML = "";
+
+            // ส่งภาพให้ AI วิเคราะห์
+            await predictImage(img);
+
+        } finally {
+
+            URL.revokeObjectURL(imageURL);
+
+        }
+
+    } catch (error) {
+
+        showError(error);
+
+        document.getElementById("status").innerText =
+            "ไม่สามารถวิเคราะห์ภาพได้";
+
+    } finally {
+
+        // อนุญาตให้เลือกไฟล์เดิมซ้ำได้
+        event.target.value = "";
+
+    }
+
+});
+
+</script>
+
+</body>
+</html>
